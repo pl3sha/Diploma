@@ -25,37 +25,53 @@ HISTORY_DIR = BASE_DIR / "history"
 LORA_DIR.mkdir(exist_ok=True)
 HISTORY_DIR.mkdir(exist_ok=True)
 
+
+def _resolve_lora_path(name: str) -> Path | None:
+    candidates = [
+        LORA_DIR / f"{name}_8bit_v2.safetensors",
+        LORA_DIR / f"{name}_peft",
+        LORA_DIR / f"{name}.safetensors",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
 LORA_FILES = {
     "public": LORA_DIR / "public_pixel_art.safetensors",
-    "custom": LORA_DIR / "custom_8bit.safetensors",
+    "custom": None,
 }
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DTYPE  = torch.float16 if DEVICE == "cuda" else torch.float32
+
+
 def _load_pipeline() -> StableDiffusionPipeline:
-    common = dict(torch_dtype=torch.float16, safety_checker=None)
-    # Сначала пробуем из локального кэша (не нужен интернет)
+    common = dict(torch_dtype=DTYPE, safety_checker=None)
     try:
-        print("Загрузка модели из кэша...")
+        print(f"Loading model from cache... (device: {DEVICE})")
         p = StableDiffusionPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
             local_files_only=True,
             **common,
         )
-        print("Модель загружена из кэша!")
+        print("Model loaded from cache.")
         return p
     except Exception:
         pass
-    # Если кэша нет — скачиваем с HuggingFace
-    print("Кэш не найден, скачиваю с HuggingFace (это займёт время)...")
+    print("Cache not found. Downloading from HuggingFace...")
     p = StableDiffusionPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5",
         **common,
     )
-    print("Модель скачана и загружена!")
+    print("Model downloaded and loaded.")
     return p
 
 
-pipe = _load_pipeline().to("cuda")
+pipe = _load_pipeline().to(DEVICE)
 pipe.enable_attention_slicing()
+if DEVICE == "cpu":
+    print("CPU mode: generation may take 3-8 minutes per image")
 
 current_lora: str | None = None
 
@@ -68,11 +84,14 @@ def switch_lora(model_type: str) -> None:
         pipe.unload_lora_weights()
         current_lora = None
     if model_type != "base":
-        lora_path = LORA_FILES.get(model_type)
+        if model_type == "custom":
+            lora_path = _resolve_lora_path("custom")
+        else:
+            lora_path = LORA_FILES.get(model_type)
         if lora_path is None or not lora_path.exists():
             raise FileNotFoundError(
-                f"LoRA '{model_type}' не найдена по пути: {lora_path}. "
-                "Положите файл .safetensors в папку backend/lora/"
+                f"LoRA '{model_type}' not found in backend/lora/. "
+                "Run train_lora.py or place custom_8bit_v2.safetensors there."
             )
         pipe.load_lora_weights(str(lora_path))
         current_lora = model_type
@@ -132,7 +151,10 @@ async def health():
         "status": "ok",
         "current_lora": current_lora,
         "cuda_available": torch.cuda.is_available(),
-        "lora_available": {k: v.exists() for k, v in LORA_FILES.items()},
+        "lora_available": {
+            "public": (LORA_DIR / "public_pixel_art.safetensors").exists(),
+            "custom": _resolve_lora_path("custom") is not None,
+        },
     }
 
 

@@ -32,15 +32,19 @@ def _preprocess(src: Path, min_side: int) -> Image.Image | None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="raw PNG -> 512x512 RGB in images/")
-    p.add_argument("--append", action="store_true")
-    p.add_argument("--min-side", type=int, default=MIN_SIDE)
+    p = argparse.ArgumentParser(description="Preprocess raw PNGs to 512x512 RGB")
+    p.add_argument("--append", action="store_true",
+                   help="Append new images without overwriting existing ones")
+    p.add_argument("--min-side", type=int, default=MIN_SIDE,
+                   help=f"Minimum image side length in pixels (default: {MIN_SIDE})")
     args = p.parse_args()
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     sources = sorted(RAW_DIR.glob("*.png"))
     start = len(list(OUT_DIR.glob("*.png"))) if args.append else 0
     saved = 0
     skipped = 0
+
     for src in sources:
         img = _preprocess(src, args.min_side)
         if img is None:
@@ -48,7 +52,8 @@ def main() -> None:
             continue
         img.save(OUT_DIR / f"{start + saved:04d}_{src.stem}.png")
         saved += 1
-    print(f"raw: {len(sources)} saved: {saved} skipped: {skipped} -> {OUT_DIR}/")
+
+    print(f"Source: {len(sources)}  Saved: {saved}  Skipped: {skipped}  Output: {OUT_DIR}/")
 
 
 if __name__ == "__main__":

@@ -1,1 +1,30 @@
-scripts/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# ML / генерация
+backend/history/
+*.ckpt
+
+# Node.js
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
+logs/
+
+# Среды разработки
+.env
+.env.*
