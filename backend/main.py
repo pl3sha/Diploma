@@ -127,6 +127,12 @@ async def generate(request: GenerateRequest):
         image: Image.Image = result.images[0]
         size = request.output_size if request.output_size in (80, 128) else 128
         image = image.resize((size, size), Image.NEAREST)
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        if image.mode == "RGBA":
+            background.paste(image, mask=image.split()[3])
+        else:
+            background.paste(image.convert("RGB"))
+        image = background
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         img_bytes = buffer.getvalue()
