@@ -1,141 +1,79 @@
 # 8-bit Character Generator
 
-Дипломная работа — веб-приложение для генерации пиксельных (8-bit) игровых персонажей с использованием нейросети Stable Diffusion v1.5 и дообученного LoRA-адаптера.
+Веб-приложение для генерации пиксельных спрайтов по текстовому описанию на базе Stable Diffusion v1.5 и LoRA.
 
-## Описание
+**Режимы генерации:** `base` (SD v1.5) · `public` (Pixel Art LoRA) · `custom` (своя LoRA, 507 спрайтов)
 
-Система позволяет генерировать пиксельные спрайты персонажей по текстовому описанию. Поддерживаются три режима:
+## Быстрый старт
 
-- **Базовая SD v1.5** — стандартная Stable Diffusion без адаптации к пиксельному стилю
-- **Публичная LoRA** — Pixel Art LoRA (PixelArtRedmond, CivitAI)
-- **Обученная LoRA** — LoRA-адаптер, дообученный на собственном датасете пиксельных спрайтов
-
-## Стек технологий
-
-| Компонент | Технологии |
+| Требование | Версия |
 |---|---|
-| Бэкенд | Python, FastAPI, uvicorn |
-| ML | PyTorch, diffusers (SD v1.5), Pillow |
-| Обучение | kohya_ss (sd-scripts), LoRA |
-| Фронтенд | React 19, Vite, Axios |
-| Деплой | cloudflared tunnel |
+| Python | 3.10+ |
+| Node.js | 18+ |
+| GPU | опционально (без GPU: генерация ~3–8 мин, обучение очень медленное) |
 
-## Структура проекта
-
-```
-Diploma/
-├── backend/
-│   ├── main.py              # FastAPI сервер
-│   ├── lora/                # LoRA-адаптеры
-│   │   ├── custom_8bit_v2.safetensors        # Обученная LoRA (kohya_ss, 507 изображений, эпоха 14)
-│   │   ├── custom_8bit_v2-000001..safetensors # Чекпоинты по эпохам
-│   │   └── public_pixel_art.safetensors       # Публичная Pixel Art LoRA
-│   ├── history/             # История генераций
-│   └── requirements.txt
-├── dataset/
-│   ├── images/              # Полный датасет (PNG + TXT, 512×512, 507 пар)
-│   ├── raw/                 # Исходные спрайты до предобработки
-│   └── prepare_dataset.py   # Предобработка: 512×512, белый фон, NEAREST
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx          # Основной компонент
-│   │   └── App.css          # Стили
-│   └── package.json
-├── research/                # Исследовательские скрипты
-│   ├── train_lora.py        # Кастомный скрипт обучения с val_loss мониторингом
-│   ├── split_dataset.py     # Разбивка датасета train/val (70/30, seed=42)
-│   ├── evaluate.py          # Оценка моделей по CLIP score
-│   └── val/                 # Отложенная выборка (30%)
-├── assets/                  # Скриншоты и иллюстрации для пояснительной записки
-├── scripts/
-│   ├── diploma_doc.py       # Библиотека сборки DOCX по шаблону СибГУТИ
-│   ├── build_diploma_v3.py  # Сборка пояснительной записки (диплом_v3.docx)
-│   ├── write_*.py           # Модули разделов ВКР
-│   ├── requirements.txt     # Зависимости для генерации диплома
-│   └── public-tunnel.bat    # Запуск cloudflare tunnel
-└── шаблон диплома.dotx      # Шаблон оформления по ГОСТ (СибГУТИ)
+```powershell
+git clone git@github.com:pl3sha/Diploma.git
+cd Diploma
+scripts\setup.ps1
+scripts\run.ps1
 ```
 
-> **LoRA-файлы:** в репозитории хранятся только продакшн-чекпоинты (`custom_8bit_v2.safetensors`, `public_pixel_art.safetensors`). Промежуточные чекпоинты по эпохам остаются локально и не коммитятся.
-
-## Датасет
-
-- **507 пар** (изображение + текстовое описание) пиксельных спрайтов из открытых источников (itch.io, OpenGameArt, Kenney.nl)
-- Классы: гуманоиды, демоны, нежить, монстры, животные и др.
-- Предобработка (`dataset/prepare_dataset.py`): обрезка до квадрата, масштабирование до 512×512, замена прозрачности белым фоном, метод NEAREST для сохранения пиксельной чёткости
-- Для исследовательской оценки обобщаемости применялась разбивка **70% / 30%** (см. `research/split_dataset.py`), seed=42 для воспроизводимости; продакшн-обучение (kohya_ss) использует полный датасет
-
-## Обучение LoRA
-
-Обучение выполнено с помощью **kohya_ss** (sd-scripts) — стандартного инструмента для LoRA fine-tuning диффузионных моделей.
-
-### Параметры обучения
-
-| Параметр | Значение |
-|---|---|
-| Базовая модель | runwayml/stable-diffusion-v1-5 |
-| LoRA rank (network_dim) | 32 |
-| LoRA alpha | 16 |
-| Эпох | 15 |
-| num_repeats | 5 |
-| Learning rate | 1e-4 |
-| Оптимизатор | AdamW8bit |
-| Точность | fp16 |
-| Датасет | dataset/images/ (507 пар, полный) |
-| Шагов/эпоха | ~2535 |
-| GPU | NVIDIA RTX 3070 (8 GB VRAM) |
-| Активный чекпоинт | эпоха 14 (custom_8bit_v2.safetensors) |
-
-### Валидация
-
-Для верификации обобщающей способности модели реализован скрипт `research/train_lora.py`, который:
-- использует разбивку **70/30** (модель обучается только на `train/`, не видя `val/`)
-- после каждой эпохи вычисляет **val_loss** на отложенных данных
-- строит график train/val loss (`dataset/loss_plot.png`) и сохраняет лог (`dataset/loss_log.csv`)
-
-## Запуск приложения
-
-### Бэкенд
+Linux / macOS:
 
 ```bash
-pip install -r backend/requirements.txt
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
+chmod +x scripts/*.sh
+scripts/setup.sh
+scripts/run.sh
 ```
 
-### Фронтенд (продакшн-сборка)
+→ http://127.0.0.1:8000
+
+`setup` создаёт `.venv`, ставит PyTorch (**CUDA cu124** если есть `nvidia-smi`, иначе CPU), зависимости бэкенда и собирает фронтенд.
+
+### Флаги setup
+
+| Windows | Linux/macOS | Действие |
+|---|---|---|
+| `-DownloadModel` | `--download-model` | Скачать SD v1.5 заранее (~4 ГБ) |
+| `-Research` | `--research` | + `requests`, `bitsandbytes`, split train/val |
+| `-All` | `--all` | research + предзагрузка модели |
+
+При первом запуске без `-DownloadModel` модель качается автоматически с HuggingFace.
+
+## Структура
+
+```
+backend/     FastAPI-сервер, LoRA, requirements.txt
+frontend/    React + Vite
+dataset/     507 пар PNG+TXT, скрипты предобработки
+research/    обучение, валидация, оценка CLIP
+scripts/     setup.ps1/.sh, run.ps1/.sh
+```
+
+В git только продакшн LoRA: `custom_8bit_v2.safetensors`, `public_pixel_art.safetensors`. Промежуточные чекпоинты — локально, в `.gitignore`.
+
+## Исследования
+
+Kohya_ss **не нужен** для запуска приложения.
 
 ```bash
-cd frontend
-npm install
-npm run build
-# фронтенд раздаётся бэкендом на /
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
+scripts/setup.sh --research          # или setup.ps1 -Research
+python research/split_dataset.py     # dataset/train + dataset/val (70/30)
+python research/train_lora.py        # GPU
+python research/train_lora.py --cpu --batch-size 1   # CPU
+python research/evaluate.py        # сервер должен быть запущен (run.ps1)
 ```
 
-### Публичный доступ через туннель
-
-```bash
-scripts/public-tunnel.bat
-```
-
-## Генерация пояснительной записки
-
-```bash
-pip install -r scripts/requirements.txt
-python scripts/build_diploma_v3.py
-```
-
-Результат сохраняется в `диплом_v3.docx` (файл в `.gitignore`, не коммитится). Шаблон оформления — `шаблон диплома.dotx`.
+`bitsandbytes` ставится только с флагом `-Research` (для AdamW8bit на GPU). На CPU и Windows без bnb используется обычный AdamW.
 
 ## API
 
 | Метод | Эндпоинт | Описание |
 |---|---|---|
-| POST | `/generate` | Генерация персонажа по промпту |
-| GET | `/history` | История последних 20 генераций |
-| GET | `/health` | Статус сервера и доступность LoRA |
-
-### Пример запроса
+| POST | `/generate` | Генерация по промпту |
+| GET | `/history` | Последние 20 генераций |
+| GET | `/health` | Статус сервера и LoRA |
 
 ```json
 POST /generate
@@ -146,3 +84,5 @@ POST /generate
   "steps": 25
 }
 ```
+
+`model_type`: `base` | `public` | `custom` · `output_size`: `80` или `128`

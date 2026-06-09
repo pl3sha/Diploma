@@ -5,9 +5,10 @@ import random
 import shutil
 from pathlib import Path
 
-IMAGES_DIR = Path("images")
-TRAIN_DIR = Path("train")
-VAL_DIR = Path("val")
+DATASET_DIR = Path(__file__).resolve().parents[1] / "dataset"
+IMAGES_DIR = DATASET_DIR / "images"
+TRAIN_DIR = DATASET_DIR / "train"
+VAL_DIR = DATASET_DIR / "val"
 
 
 def split(val_ratio: float = 0.30, seed: int = 42) -> None:

@@ -14,12 +14,12 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from tqdm import tqdm
 
-BASE_DIR   = Path(__file__).parent
-TRAIN_DIR  = BASE_DIR / "dataset" / "train"
-VAL_DIR    = BASE_DIR / "dataset" / "val"
-OUTPUT_DIR = BASE_DIR / "backend" / "lora" / "custom_peft"
-LOG_FILE   = BASE_DIR / "dataset" / "loss_log.csv"
-PLOT_FILE  = BASE_DIR / "dataset" / "loss_plot.png"
+ROOT_DIR   = Path(__file__).resolve().parents[1]
+TRAIN_DIR  = ROOT_DIR / "dataset" / "train"
+VAL_DIR    = ROOT_DIR / "dataset" / "val"
+OUTPUT_DIR = ROOT_DIR / "backend" / "lora" / "custom_peft"
+LOG_FILE   = ROOT_DIR / "dataset" / "loss_log.csv"
+PLOT_FILE  = ROOT_DIR / "dataset" / "loss_plot.png"
 MODEL_ID   = "runwayml/stable-diffusion-v1-5"
 
 IMAGE_TRANSFORMS = transforms.Compose([
@@ -159,6 +159,50 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _resolve_device(force_cpu: bool) -> torch.device:
+    if force_cpu:
+        return torch.device("cpu")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _make_optimizer(unet, lr: float, device: torch.device):
+    if device.type == "cuda":
+        try:
+            import bitsandbytes as bnb
+            opt = bnb.optim.AdamW8bit(filter(lambda p: p.requires_grad, unet.parameters()), lr=lr)
+            print(f"Оптимизатор    : AdamW8bit  lr={lr:.1e}")
+            return opt
+        except ImportError:
+            pass
+    opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, unet.parameters()), lr=lr)
+    label = "AdamW (CPU)" if device.type == "cpu" else "AdamW"
+    print(f"Оптимизатор    : {label}  lr={lr:.1e}")
+    return opt
+
+
+def _make_scaler(device: torch.device):
+    if device.type != "cuda":
+        return None
+    try:
+        return torch.amp.GradScaler("cuda")
+    except TypeError:
+        return torch.cuda.amp.GradScaler()
+
+
+def _backward_step(loss: torch.Tensor, optimizer, scaler, unet) -> None:
+    optimizer.zero_grad()
+    if scaler is not None:
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
+        optimizer.step()
+
+
 def train(args: argparse.Namespace) -> None:
     from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
     from peft import LoraConfig, get_peft_model
@@ -166,9 +210,12 @@ def train(args: argparse.Namespace) -> None:
 
     set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype  = torch.float16
+    device = _resolve_device(args.cpu)
+    use_amp = device.type == "cuda"
+    dtype = torch.float16 if use_amp else torch.float32
     print(f"Устройство : {device}")
+    if device.type == "cpu":
+        print("CPU mode   : обучение будет очень медленным, рекомендуется --batch-size 1")
     print(f"Train      : {len(list(TRAIN_DIR.glob('*.png')))} изображений")
     print(f"Val        : {len(list(VAL_DIR.glob('*.png')))} изображений")
     print(f"Seed       : {args.seed}")
@@ -198,21 +245,16 @@ def train(args: argparse.Namespace) -> None:
 
     train_ds = SpriteDataset(TRAIN_DIR, tokenizer, repeats=args.repeats)
     val_ds   = SpriteDataset(VAL_DIR,   tokenizer, repeats=1)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  num_workers=0, pin_memory=True)
-    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    pin_memory = device.type == "cuda"
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  num_workers=0, pin_memory=pin_memory)
+    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=pin_memory)
 
     steps_per_epoch = len(train_loader)
     total_steps     = steps_per_epoch * args.epochs
     print(f"\nШагов за эпоху : {steps_per_epoch}")
     print(f"Всего шагов    : {total_steps}  ({args.epochs} эпох × {args.repeats} повторов)")
 
-    try:
-        import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(filter(lambda p: p.requires_grad, unet.parameters()), lr=args.lr)
-        print(f"Оптимизатор    : AdamW8bit  lr={args.lr:.1e}")
-    except ImportError:
-        optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, unet.parameters()), lr=args.lr)
-        print(f"Оптимизатор    : AdamW  lr={args.lr:.1e}")
+    optimizer = _make_optimizer(unet, args.lr, device)
 
     total_steps     = (len(list(TRAIN_DIR.glob("*.png"))) * args.repeats // args.batch_size) * args.epochs
     warmup_steps    = total_steps // 20
@@ -222,10 +264,8 @@ def train(args: argparse.Namespace) -> None:
     scheduler_lr = SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_steps])
     print(f"LR scheduler   : cosine с warmup ({warmup_steps} шагов), всего {total_steps} шагов")
 
-    try:
-        scaler = torch.amp.GradScaler("cuda")
-    except TypeError:
-        scaler = torch.cuda.amp.GradScaler()
+    scaler = _make_scaler(device)
+    amp_ctx = torch.autocast(device.type, dtype=dtype, enabled=use_amp)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     log_rows: list[dict] = []
@@ -242,15 +282,10 @@ def train(args: argparse.Namespace) -> None:
 
         pbar = tqdm(train_loader, desc=f"Эпоха {epoch:>2}/{args.epochs} [train]", leave=False, ncols=80)
         for batch in pbar:
-            with torch.autocast("cuda", dtype=dtype):
+            with amp_ctx:
                 loss = compute_loss(batch, unet, vae, text_encoder, scheduler, device, dtype,
                                     noise_offset=args.noise_offset)
-            optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            _backward_step(loss, optimizer, scaler, unet)
             scheduler_lr.step()
             train_sum += loss.item()
             pbar.set_postfix(loss=f"{loss.item():.4f}")
@@ -262,7 +297,7 @@ def train(args: argparse.Namespace) -> None:
         val_sum = 0.0
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Эпоха {epoch:>2}/{args.epochs} [val]  ", leave=False, ncols=80):
-                with torch.autocast("cuda", dtype=dtype):
+                with amp_ctx:
                     val_sum += compute_loss(batch, unet, vae, text_encoder, scheduler, device, dtype,
                                             noise_offset=0.0).item()
 
@@ -313,6 +348,7 @@ def main() -> None:
     p.add_argument("--seed",       type=int,   default=42,   help="Random seed для воспроизводимости")
     p.add_argument("--no-gradient-checkpointing", action="store_false",
                    dest="gradient_checkpointing", default=True)
+    p.add_argument("--cpu", action="store_true", help="Принудительно обучать на CPU")
     args = p.parse_args()
     train(args)
 

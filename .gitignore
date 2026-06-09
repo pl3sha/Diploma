@@ -44,15 +44,8 @@ logs/
 .env
 .env.*
 
-# IDE
-.cursor/
-.idea/
-.vscode/
-!.vscode/extensions.json
-
-# Временные файлы Office
 ~$*
 ~WRL*.tmp
-
+*.dotx
 *.docx
 *.pdf
