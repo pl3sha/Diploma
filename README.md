@@ -17,7 +17,6 @@
 | Бэкенд | Python, FastAPI, uvicorn |
 | ML | PyTorch, diffusers (SD v1.5), Pillow |
 | Обучение | kohya_ss (sd-scripts), LoRA |
-| Оценка | CLIP score (transformers) |
 | Фронтенд | React 19, Vite, Axios |
 | Деплой | cloudflared tunnel |
 
@@ -46,13 +45,18 @@ Diploma/
 │   ├── train_lora.py        # Кастомный скрипт обучения с val_loss мониторингом
 │   ├── split_dataset.py     # Разбивка датасета train/val (70/30, seed=42)
 │   ├── evaluate.py          # Оценка моделей по CLIP score
-│   ├── loss_log.csv         # Лог train/val loss по эпохам (research/train_lora.py)
-│   ├── loss_plot.png        # График train/val loss
-│   ├── convert_checkpoint.py
-│   └── extract_unet_only.py
-└── scripts/
-    └── public-tunnel.bat    # Запуск cloudflare tunnel
+│   └── val/                 # Отложенная выборка (30%)
+├── assets/                  # Скриншоты и иллюстрации для пояснительной записки
+├── scripts/
+│   ├── diploma_doc.py       # Библиотека сборки DOCX по шаблону СибГУТИ
+│   ├── build_diploma_v3.py  # Сборка пояснительной записки (диплом_v3.docx)
+│   ├── write_*.py           # Модули разделов ВКР
+│   ├── requirements.txt     # Зависимости для генерации диплома
+│   └── public-tunnel.bat    # Запуск cloudflare tunnel
+└── шаблон диплома.dotx      # Шаблон оформления по ГОСТ (СибГУТИ)
 ```
+
+> **LoRA-файлы:** в репозитории хранятся только продакшн-чекпоинты (`custom_8bit_v2.safetensors`, `public_pixel_art.safetensors`). Промежуточные чекпоинты по эпохам остаются локально и не коммитятся.
 
 ## Датасет
 
@@ -87,15 +91,7 @@ Diploma/
 Для верификации обобщающей способности модели реализован скрипт `research/train_lora.py`, который:
 - использует разбивку **70/30** (модель обучается только на `train/`, не видя `val/`)
 - после каждой эпохи вычисляет **val_loss** на отложенных данных
-- строит график train/val loss (`research/loss_plot.png`) и сохраняет лог (`research/loss_log.csv`)
-
-Дополнительно проведена оценка по метрике **CLIP score** на val-выборке (114 изображений):
-
-| Модель | CLIP score |
-|---|---|
-| Base SD v1.5 | 30.75 |
-| Public LoRA | 31.13 |
-| **Custom LoRA (kohya_ss)** | **33.59** |
+- строит график train/val loss (`dataset/loss_plot.png`) и сохраняет лог (`dataset/loss_log.csv`)
 
 ## Запуск приложения
 
@@ -121,6 +117,15 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```bash
 scripts/public-tunnel.bat
 ```
+
+## Генерация пояснительной записки
+
+```bash
+pip install -r scripts/requirements.txt
+python scripts/build_diploma_v3.py
+```
+
+Результат сохраняется в `диплом_v3.docx` (файл в `.gitignore`, не коммитится). Шаблон оформления — `шаблон диплома.dotx`.
 
 ## API
 

@@ -1,16 +1,30 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
 *.egg-info/
 .venv/
 venv/
 *.egg
+.pytest_cache/
+.mypy_cache/
 
 # ML / генерация
 backend/history/
 *.ckpt
+.cache/
+models--*/
+
+# LoRA — в репозитории только продакшн-чекпоинты
+backend/lora/custom_8bit_v2-*.safetensors
+backend/lora/custom_8bit_v2_ep*.safetensors
+backend/lora/custom_peft/
+backend/lora/custom_peft*/
+backend/lora/custom_peft*.safetensors
+backend/lora/public_pixel_art_old.safetensors
+!backend/lora/custom_8bit_v2.safetensors
+!backend/lora/public_pixel_art.safetensors
 
 # Node.js
 node_modules/
@@ -20,6 +34,7 @@ frontend/.vite/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Логи
 *.log
@@ -28,3 +43,16 @@ logs/
 # Среды разработки
 .env
 .env.*
+
+# IDE
+.cursor/
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# Временные файлы Office
+~$*
+~WRL*.tmp
+
+*.docx
+*.pdf

@@ -37,9 +37,12 @@ def _resolve_lora_path(name: str) -> Path | None:
             return c
     return None
 
+PUBLIC_LORA_PATH = LORA_DIR / "public_pixel_art.safetensors"
+CUSTOM_LORA_PATH = LORA_DIR / "custom_8bit_v2.safetensors"
+
 LORA_FILES = {
-    "public": LORA_DIR / "public_pixel_art.safetensors",
-    "custom": None,
+    "public": PUBLIC_LORA_PATH,
+    "custom": CUSTOM_LORA_PATH,
 }
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,7 +88,7 @@ def switch_lora(model_type: str) -> None:
         current_lora = None
     if model_type != "base":
         if model_type == "custom":
-            lora_path = _resolve_lora_path("custom")
+            lora_path = CUSTOM_LORA_PATH if CUSTOM_LORA_PATH.exists() else _resolve_lora_path("custom")
         else:
             lora_path = LORA_FILES.get(model_type)
         if lora_path is None or not lora_path.exists():
@@ -158,8 +161,8 @@ async def health():
         "current_lora": current_lora,
         "cuda_available": torch.cuda.is_available(),
         "lora_available": {
-            "public": (LORA_DIR / "public_pixel_art.safetensors").exists(),
-            "custom": _resolve_lora_path("custom") is not None,
+            "public": PUBLIC_LORA_PATH.exists(),
+            "custom": CUSTOM_LORA_PATH.exists() or _resolve_lora_path("custom") is not None,
         },
     }
 

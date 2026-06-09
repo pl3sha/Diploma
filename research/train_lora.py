@@ -1,19 +1,3 @@
-"""
-Кастомный цикл обучения LoRA для Stable Diffusion v1.5.
-
-Преимущества перед kohya_ss:
-  - Реальный val_loss после каждой эпохи (модель НЕ видит val/ при обучении)
-  - CSV лог: dataset/loss_log.csv
-  - График: dataset/loss_plot.png
-  - Полный контроль над процессом
-
-Зависимости (уже в backend/requirements.txt):
-    pip install peft safetensors tqdm matplotlib
-
-Использование:
-    python train_lora.py
-    python train_lora.py --epochs 15 --repeats 14 --rank 32 --lr 1e-4
-"""
 from __future__ import annotations
 
 import argparse
@@ -46,8 +30,6 @@ IMAGE_TRANSFORMS = transforms.Compose([
 ])
 
 
-# ── Датасет ───────────────────────────────────────────────────────────
-
 class SpriteDataset(Dataset):
     def __init__(self, image_dir: Path, tokenizer, repeats: int = 1) -> None:
         pairs: list[tuple[Path, str]] = []
@@ -57,7 +39,6 @@ class SpriteDataset(Dataset):
                 caption = txt_path.read_text(encoding="utf-8").strip()
                 if caption:
                     pairs.append((img_path, caption))
-        # repeats — аналог num_repeats в kohya: каждая картинка N раз за эпоху
         self.pairs = pairs * repeats
         self.tokenizer = tokenizer
 
@@ -80,8 +61,6 @@ class SpriteDataset(Dataset):
         }
 
 
-# ── Loss ──────────────────────────────────────────────────────────────
-
 def compute_loss(batch, unet, vae, text_encoder, scheduler, device, dtype,
                  noise_offset: float = 0.1) -> torch.Tensor:
     pixel_values = batch["pixel_values"].to(device, dtype=dtype)
@@ -92,7 +71,6 @@ def compute_loss(batch, unet, vae, text_encoder, scheduler, device, dtype,
         encoder_hidden_states = text_encoder(input_ids)[0]
 
     noise = torch.randn_like(latents)
-    # noise offset улучшает качество фона и однородных областей (стандарт в kohya)
     if noise_offset > 0:
         noise += noise_offset * torch.randn(latents.shape[0], latents.shape[1], 1, 1,
                                              device=device, dtype=dtype)
@@ -106,8 +84,6 @@ def compute_loss(batch, unet, vae, text_encoder, scheduler, device, dtype,
 
     return F.mse_loss(pred.float(), target.float())
 
-
-# ── График loss ───────────────────────────────────────────────────────
 
 def save_plot(log_rows: list[dict]) -> None:
     try:
@@ -136,21 +112,7 @@ def save_plot(log_rows: list[dict]) -> None:
         print("matplotlib не найден, график не создан. Установите: pip install matplotlib")
 
 
-# ── Конвертация PEFT → kohya ──────────────────────────────────────────
-
 def _peft_to_kohya(peft_sd: dict, prefix: str, lora_alpha: int) -> dict:
-    """
-    Конвертирует PEFT LoRA state dict → kohya-формат.
-
-    prefix: 'lora_unet' для UNet, 'lora_te' для text encoder.
-    Входные ключи: [unet.|text_encoder.]base_model.model....lora_A.weight
-    Выходные ключи: {prefix}_layer_name.lora_[down|up].weight
-
-    Поддерживаемые форматы PEFT ключей:
-      .lora_A.weight          (PEFT >= 0.6, текущий)
-      .lora_A.default.weight  (PEFT < 0.6, устаревший)
-      .lora.down.weight       (diffusers-native формат)
-    """
     kohya: dict = {}
     seen: set = set()
     for key, value in peft_sd.items():
@@ -158,7 +120,6 @@ def _peft_to_kohya(peft_sd: dict, prefix: str, lora_alpha: int) -> dict:
                .replace("unet.base_model.model.", "")
                .replace("text_encoder.base_model.model.", "")
                .replace("base_model.model.", ""))
-        # Определяем тип ключа через endswith (точное совпадение суффикса)
         if key.endswith(".lora_A.weight") or key.endswith(".lora_A.default.weight") or key.endswith(".lora.down.weight"):
             layer = (key
                      .removesuffix(".lora_A.weight")
@@ -180,7 +141,6 @@ def _peft_to_kohya(peft_sd: dict, prefix: str, lora_alpha: int) -> dict:
 
 
 def _save_kohya_unet(unet_peft, output_path: Path, lora_alpha: int) -> None:
-    """Сохраняет UNet LoRA в kohya-совместимый safetensors файл."""
     from safetensors.torch import save_file
     from peft import get_peft_model_state_dict
 
@@ -190,8 +150,6 @@ def _save_kohya_unet(unet_peft, output_path: Path, lora_alpha: int) -> None:
     size_mb = output_path.stat().st_size // 1024 // 1024
     print(f"  Ключей: {len(kohya_sd)}  |  Размер: {size_mb} МБ")
 
-
-# ── Обучение ──────────────────────────────────────────────────────────
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -215,7 +173,6 @@ def train(args: argparse.Namespace) -> None:
     print(f"Val        : {len(list(VAL_DIR.glob('*.png')))} изображений")
     print(f"Seed       : {args.seed}")
 
-    # ── Загрузка компонентов SD v1.5 ─────────────────────────────────
     print("\nЗагрузка моделей SD v1.5...")
     tokenizer    = CLIPTokenizer.from_pretrained(MODEL_ID, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(MODEL_ID, subfolder="text_encoder").to(device, dtype=dtype)
@@ -224,9 +181,8 @@ def train(args: argparse.Namespace) -> None:
     scheduler    = DDPMScheduler.from_pretrained(MODEL_ID, subfolder="scheduler")
 
     vae.requires_grad_(False)
-    text_encoder.requires_grad_(False)   # заморожен полностью (как в kohya по умолчанию)
+    text_encoder.requires_grad_(False)
 
-    # ── LoRA только на UNet (attention-слои) — как kohya ─────────────
     unet_lora_cfg = LoraConfig(
         r=args.rank,
         lora_alpha=args.rank // 2,
@@ -240,9 +196,8 @@ def train(args: argparse.Namespace) -> None:
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
 
-    # ── Датасеты ──────────────────────────────────────────────────────
     train_ds = SpriteDataset(TRAIN_DIR, tokenizer, repeats=args.repeats)
-    val_ds   = SpriteDataset(VAL_DIR,   tokenizer, repeats=1)   # val без повторов
+    val_ds   = SpriteDataset(VAL_DIR,   tokenizer, repeats=1)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  num_workers=0, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
@@ -251,7 +206,6 @@ def train(args: argparse.Namespace) -> None:
     print(f"\nШагов за эпоху : {steps_per_epoch}")
     print(f"Всего шагов    : {total_steps}  ({args.epochs} эпох × {args.repeats} повторов)")
 
-    # ── Оптимизатор ───────────────────────────────────────────────────
     try:
         import bitsandbytes as bnb
         optimizer = bnb.optim.AdamW8bit(filter(lambda p: p.requires_grad, unet.parameters()), lr=args.lr)
@@ -260,22 +214,19 @@ def train(args: argparse.Namespace) -> None:
         optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, unet.parameters()), lr=args.lr)
         print(f"Оптимизатор    : AdamW  lr={args.lr:.1e}")
 
-    # ── Cosine LR scheduler с warmup (как в kohya) ───────────────────
     total_steps     = (len(list(TRAIN_DIR.glob("*.png"))) * args.repeats // args.batch_size) * args.epochs
-    warmup_steps    = total_steps // 20   # 5% шагов — warmup
+    warmup_steps    = total_steps // 20
     from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
     warmup_sched = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
     cosine_sched = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=args.lr * 0.1)
     scheduler_lr = SequentialLR(optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_steps])
     print(f"LR scheduler   : cosine с warmup ({warmup_steps} шагов), всего {total_steps} шагов")
 
-    # ИСПРАВЛЕНИЕ: совместимость GradScaler с PyTorch < 2.0 и >= 2.0
     try:
         scaler = torch.amp.GradScaler("cuda")
     except TypeError:
         scaler = torch.cuda.amp.GradScaler()
 
-    # ── Цикл обучения ─────────────────────────────────────────────────
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     log_rows: list[dict] = []
 
@@ -285,7 +236,6 @@ def train(args: argparse.Namespace) -> None:
 
     for epoch in range(1, args.epochs + 1):
 
-        # ── Train ────────────────────────────────────────────────────
         unet.train()
         train_sum = 0.0
         t0 = time.time()
@@ -308,7 +258,6 @@ def train(args: argparse.Namespace) -> None:
 
         train_loss = train_sum / len(train_loader)
 
-        # ── Validation ───────────────────────────────────────────────
         unet.eval()
         val_sum = 0.0
         with torch.no_grad():
@@ -323,30 +272,23 @@ def train(args: argparse.Namespace) -> None:
         print(f"{epoch:>6}  {train_loss:>12.4f}  {val_loss:>10.4f}  {elapsed:>6.0f}s")
         log_rows.append({"epoch": epoch, "train_loss": round(train_loss, 6), "val_loss": round(val_loss, 6)})
 
-        # ── Чекпоинт в kohya-формат (UNet) ──────────────────────────
         if epoch % args.save_every == 0 or epoch == args.epochs:
             ckpt_path = OUTPUT_DIR.parent / f"custom_peft_ep{epoch:02d}.safetensors"
             _save_kohya_unet(unet, ckpt_path, lora_alpha=args.rank // 2)
             print(f"         → чекпоинт: {ckpt_path.name}")
 
-    # ── Финальное сохранение в kohya-формат ──────────────────────────
-    # pipe.load_lora_weights() понимает kohya-формат надёжнее всего.
-    # Конвертируем вручную: PEFT-ключи → kohya-ключи.
     print("\nКонвертация в kohya-формат (UNet)...")
     _save_kohya_unet(unet, OUTPUT_DIR / "pytorch_lora_weights.safetensors", lora_alpha=args.rank // 2)
     print(f"Модель сохранена : {OUTPUT_DIR}/pytorch_lora_weights.safetensors")
 
-    # ── CSV лог ───────────────────────────────────────────────────────
     with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss", "val_loss"])
         writer.writeheader()
         writer.writerows(log_rows)
     print(f"Лог              : {LOG_FILE}")
 
-    # ── График ────────────────────────────────────────────────────────
     save_plot(log_rows)
 
-    # ── Итоговая таблица ──────────────────────────────────────────────
     best_val = min(log_rows, key=lambda r: r["val_loss"])
     print(f"\n{'─'*60}")
     print(f"{'Эпоха':>6}  {'train_loss':>12}  {'val_loss':>10}")
@@ -357,8 +299,6 @@ def train(args: argparse.Namespace) -> None:
     print(f"\nЛучший val_loss {best_val['val_loss']:.4f} на эпохе {best_val['epoch']}")
     print(f"Используйте чекпоинт: custom_peft_ep{best_val['epoch']:02d}/")
 
-
-# ── CLI ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Обучение LoRA с train/val мониторингом")
